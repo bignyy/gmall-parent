@@ -1,6 +1,6 @@
 package com.atguigu.gmall0213.realtime.dws
 
-import java.lang
+import java.{lang, util}
 import java.util.Properties
 
 import com.alibaba.fastjson.JSON
@@ -93,17 +93,16 @@ object OrderWideApp {
     //    val joinedDstream: DStream[(Long, (OrderInfo, OrderDetail))] = orderInfoWithKeyDstream.join(orderDetailWithKeyDstream,4)
 
 
-
     // 方案一：  1开窗口    2 join 3  去重
     //window
     val orderInfoWindowDstream: DStream[OrderInfo] = orderInfoDstream.window(Seconds(15), Seconds(5)) //窗口大小  滑动步长
     val orderDetailWindowDstream: DStream[OrderDetail] = orderDetailDstream.window(Seconds(15), Seconds(5)) //窗口大小  滑动步长
 
     // join
-    val orderInfoWithKeyDstream: DStream[(Long, OrderInfo)] = orderInfoWindowDstream.map(orderInfo=>(orderInfo.id,orderInfo))
-    val orderDetailWithKeyDstream: DStream[(Long, OrderDetail)] = orderDetailWindowDstream.map(orderDetail=>(orderDetail.order_id,orderDetail))
+    val orderInfoWithKeyDstream: DStream[(Long, OrderInfo)] = orderInfoWindowDstream.map(orderInfo => (orderInfo.id, orderInfo))
+    val orderDetailWithKeyDstream: DStream[(Long, OrderDetail)] = orderDetailWindowDstream.map(orderDetail => (orderDetail.order_id, orderDetail))
 
-    val joinedDstream: DStream[(Long, (OrderInfo, OrderDetail))] = orderInfoWithKeyDstream.join(orderDetailWithKeyDstream,4)
+    val joinedDstream: DStream[(Long, (OrderInfo, OrderDetail))] = orderInfoWithKeyDstream.join(orderDetailWithKeyDstream, 4)
 
     // 去重
     //  数据统一保存到
@@ -140,8 +139,8 @@ object OrderWideApp {
       println("分区orderIds:" + orderWideList.map(_.order_id).mkString(","))
       //迭代
       for (orderWide <- orderWideList) {
-        var splitAmountSum = 0D
-        //其他分摊总金额
+        var splitAmountSum = 0D //其他分摊总金额
+
         var originAmountSum = 0D //其他原价总金额
 
         // 要从redis中取得累计值   Σ其他的明细（个数*单价）
@@ -167,10 +166,10 @@ object OrderWideApp {
           // 要从redis中取得  Σ其他的明细的分摊金额
           // redis    type?  string    key?  order_split_sum:[order_id]  value? Σ其他的明细的分摊金额
           val splitAmountSums: String = jedis.get("order_split_sum" + orderWide.order_id) //获取其他分摊总金额
-          if(splitAmountSums!=null&& splitAmountSums.length>0){
-            splitAmountSum=splitAmountSums.toDouble
+          if (splitAmountSums != null && splitAmountSums.length > 0) {
+            splitAmountSum = splitAmountSums.toDouble
           }
-          orderWide.final_detail_amount = Math.round((orderWide.final_total_amount - splitAmountSum)*100D)/100D//分摊金额=总支付-其他总分摊
+          orderWide.final_detail_amount = Math.round((orderWide.final_total_amount - splitAmountSum) * 100D) / 100D //分摊金额=总支付-其他总分摊
 
 
         } else {
@@ -207,8 +206,8 @@ object OrderWideApp {
         //合计保存
         splitAmountSum += orderWide.final_detail_amount
         originAmountSum += restOriginAmount
-        jedis.setex("order_origin_sum:" + orderWide.order_id, 600,originAmountSum.toString)
-        jedis.setex("order_split_sum" + orderWide.order_id, 600,splitAmountSum.toString)
+        jedis.setex("order_origin_sum:" + orderWide.order_id, 600, originAmountSum.toString)
+        jedis.setex("order_split_sum" + orderWide.order_id, 600, splitAmountSum.toString)
       }
 
       // 关闭redis
@@ -223,39 +222,29 @@ object OrderWideApp {
     val sparkSession: SparkSession = SparkSession.builder().appName("dws_order_wide_app").getOrCreate()
     import sparkSession.implicits._
 
-    orderWideAmountDStreame.foreachRDD{rdd=>
+    orderWideAmountDStreame.foreachRDD { rdd =>
+      //TODO 写入clickhouse
       val df = rdd.toDF()
       df.write.mode(SaveMode.Append)
-          .option("batchsize","100")
-          .option("isolationLevel","NONE")//设置事务
-          .option("numPartitions","4")//设置并发
-          .option("driver","ru.yandex.clickhouse.ClickHouseDriver")
-          .jdbc("jdbc:clickhouse://hadoop102:8123/test0213","order_wide_0213",new Properties())
-      rdd.foreach{orderWide=>
-        MyKafkaSink.send("DWS_ORDER_WIDE",  JSON.toJSONString(orderWide,new SerializeConfig(true)))
+        .option("batchsize", "100")
+        .option("isolationLevel", "NONE") //设置事务
+        .option("numPartitions", "4") //设置并发
+        .option("driver", "ru.yandex.clickhouse.ClickHouseDriver")
+        .jdbc("jdbc:clickhouse://hadoop102:8123/test0213", "order_wide_0213", new Properties())
+      //TODO 写入kafka
+      rdd.foreach { orderWide =>
+        MyKafkaSink.send("DWS_ORDER_WIDE", JSON.toJSONString(orderWide, new SerializeConfig(true)))
 
-      OffsetManager.saveOffset(orderInfoTopic,orderInfoGroupId,orderInfoOffsetRanges)
-      OffsetManager.saveOffset(orderDetailTopic,orderDetailGroupId,orderDetailOffsetRanges)
+        OffsetManager.saveOffset(orderInfoTopic, orderInfoGroupId, orderInfoOffsetRanges)
+        OffsetManager.saveOffset(orderDetailTopic, orderDetailGroupId, orderDetailOffsetRanges)
+      }
+      ssc.start()
+      ssc.awaitTermination()
+
+
+
     }
-    ssc.start()
-    ssc.awaitTermination()
-
-
-
-
-
-
-
-
 
 
   }
-
-
-
-
-
-
-
-
 }
